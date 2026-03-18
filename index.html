@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>미로찾기 - 장지웅</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    color: #eee;
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 16px;
+  }
+  h1 { font-size: 28px; color: #e94560; }
+  #info {
+    display: flex;
+    gap: 32px;
+    font-size: 18px;
+  }
+  #info span { color: #0f3460; background: #e94560; padding: 4px 14px; border-radius: 8px; font-weight: bold; }
+  canvas {
+    border: 3px solid #e94560;
+    border-radius: 4px;
+    background: #16213e;
+  }
+  #controls {
+    font-size: 14px;
+    color: #aaa;
+  }
+  #message {
+    font-size: 24px;
+    font-weight: bold;
+    color: #0f0;
+    min-height: 32px;
+  }
+  #scramble-warning {
+    font-size: 20px;
+    font-weight: bold;
+    color: #ff0;
+    min-height: 28px;
+    transition: opacity 0.3s;
+  }
+  #scramble-warning.active {
+    animation: blink 0.5s ease-in-out 3;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+  }
+  #direction-display {
+    font-size: 14px;
+    color: #aaa;
+    display: flex;
+    gap: 12px;
+  }
+  #direction-display .swapped {
+    color: #ff4444;
+    font-weight: bold;
+  }
+  button {
+    background: #e94560;
+    color: #fff;
+    border: none;
+    padding: 10px 28px;
+    font-size: 16px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:hover { background: #c73650; }
+
+  /* 모바일 방향키 */
+  #mobile-pad {
+    display: none;
+    grid-template-areas:
+      ".  up  ."
+      "left down right";
+    grid-template-columns: 60px 60px 60px;
+    grid-template-rows: 60px 60px;
+    gap: 6px;
+  }
+  #mobile-pad button {
+    width: 60px; height: 60px; font-size: 24px; padding: 0; border-radius: 12px;
+  }
+  #mobile-pad .up    { grid-area: up; }
+  #mobile-pad .down  { grid-area: down; }
+  #mobile-pad .left  { grid-area: left; }
+  #mobile-pad .right { grid-area: right; }
+
+  @media (max-width: 600px) {
+    #mobile-pad { display: grid; }
+  }
+</style>
+</head>
+<body>
+
+<h1>미로찾기</h1>
+<div id="info">
+  레벨: <span id="level">1</span>
+  이동: <span id="moves">0</span>
+  시간: <span id="timer">0s</span>
+</div>
+<canvas id="maze"></canvas>
+<div id="scramble-warning"></div>
+<div id="message"></div>
+<div id="direction-display"></div>
+<div id="controls">방향키(←↑↓→) 또는 WASD로 이동 | 7~12초마다 조작이 뒤바뀝니다!</div>
+
+<div id="mobile-pad">
+  <button class="up" onclick="mappedMove('up')">↑</button>
+  <button class="left" onclick="mappedMove('left')">←</button>
+  <button class="down" onclick="mappedMove('down')">↓</button>
+  <button class="right" onclick="mappedMove('right')">→</button>
+</div>
+
+<button onclick="newGame()">새 게임</button>
+
+<script>
+const canvas = document.getElementById('maze');
+const ctx = canvas.getContext('2d');
+const msgEl = document.getElementById('message');
+const movesEl = document.getElementById('moves');
+const timerEl = document.getElementById('timer');
+const levelEl = document.getElementById('level');
+
+let cols, rows, cellSize, grid, player, goal, moves, level, seconds, timerID, won;
+let scrambleTimerID;
+
+// 방향 매핑: 입력 → 실제 이동 방향
+// 기본: { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] }
+let dirMap = {};
+const DIR_NAMES = ['up', 'down', 'left', 'right'];
+const DIR_VECTORS = { up: [0,-1], down: [0,1], left: [-1,0], right: [1,0] };
+const DIR_ARROWS = { up: '↑', down: '↓', left: '←', right: '→' };
+
+const scrambleEl = document.getElementById('scramble-warning');
+const dirDisplayEl = document.getElementById('direction-display');
+
+const CELL = 28;
+
+function init() {
+  level = 1;
+  newGame();
+}
+
+function resetDirMap() {
+  dirMap = { up: 'up', down: 'down', left: 'left', right: 'right' };
+  updateDirDisplay();
+}
+
+function scrambleDirections() {
+  if (won) return;
+
+  // 셔플 방식: 랜덤하게 방향을 섞음
+  const shuffled = [...DIR_NAMES];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  // 최소 2개는 바뀌도록 보장 (전부 제자리면 다시)
+  let same = 0;
+  for (let i = 0; i < DIR_NAMES.length; i++) {
+    if (DIR_NAMES[i] === shuffled[i]) same++;
+  }
+  if (same === DIR_NAMES.length) {
+    // 강제로 2개 스왑
+    [shuffled[0], shuffled[1]] = [shuffled[1], shuffled[0]];
+  }
+
+  for (let i = 0; i < DIR_NAMES.length; i++) {
+    dirMap[DIR_NAMES[i]] = shuffled[i];
+  }
+
+  // 경고 표시
+  scrambleEl.textContent = '!! 조작이 바뀌었습니다 !!';
+  scrambleEl.className = 'active';
+  setTimeout(() => { scrambleEl.className = ''; }, 2000);
+
+  updateDirDisplay();
+  scheduleNextScramble();
+}
+
+function updateDirDisplay() {
+  let html = '';
+  for (const d of DIR_NAMES) {
+    const mapped = dirMap[d];
+    const isSwapped = d !== mapped;
+    const cls = isSwapped ? 'swapped' : '';
+    html += `<span class="${cls}">${DIR_ARROWS[d]}→${DIR_ARROWS[mapped]}</span>`;
+  }
+  dirDisplayEl.innerHTML = html;
+}
+
+function scheduleNextScramble() {
+  clearTimeout(scrambleTimerID);
+  const delay = (7 + Math.random() * 5) * 1000; // 7~12초
+  scrambleTimerID = setTimeout(scrambleDirections, delay);
+}
+
+function newGame() {
+  won = false;
+  msgEl.textContent = '';
+  scrambleEl.textContent = '';
+  moves = 0;
+  seconds = 0;
+  movesEl.textContent = '0';
+  timerEl.textContent = '0s';
+  levelEl.textContent = level;
+  clearInterval(timerID);
+  clearTimeout(scrambleTimerID);
+  resetDirMap();
+  scheduleNextScramble();
+  timerID = setInterval(() => {
+    if (!won) { seconds++; timerEl.textContent = seconds + 's'; }
+  }, 1000);
+
+  // 레벨에 따라 미로 크기 증가
+  cols = 7 + (level - 1) * 2;
+  rows = 7 + (level - 1) * 2;
+  if (cols > 31) cols = 31;
+  if (rows > 31) rows = 31;
+
+  cellSize = CELL;
+  canvas.width = cols * cellSize;
+  canvas.height = rows * cellSize;
+
+  generateMaze();
+  player = { x: 0, y: 0 };
+  goal = { x: cols - 1, y: rows - 1 };
+  draw();
+}
+
+// --- 미로 생성 (재귀 백트래킹) ---
+function generateMaze() {
+  grid = [];
+  for (let y = 0; y < rows; y++) {
+    grid[y] = [];
+    for (let x = 0; x < cols; x++) {
+      grid[y][x] = { top: true, right: true, bottom: true, left: true, visited: false };
+    }
+  }
+  const stack = [];
+  let cur = { x: 0, y: 0 };
+  grid[0][0].visited = true;
+  let visitedCount = 1;
+  const total = cols * rows;
+
+  while (visitedCount < total) {
+    const neighbors = [];
+    const { x, y } = cur;
+    if (y > 0 && !grid[y-1][x].visited) neighbors.push({ x, y: y-1, dir: 'top' });
+    if (x < cols-1 && !grid[y][x+1].visited) neighbors.push({ x: x+1, y, dir: 'right' });
+    if (y < rows-1 && !grid[y+1][x].visited) neighbors.push({ x, y: y+1, dir: 'bottom' });
+    if (x > 0 && !grid[y][x-1].visited) neighbors.push({ x: x-1, y, dir: 'left' });
+
+    if (neighbors.length > 0) {
+      const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+      stack.push(cur);
+      // 벽 제거
+      if (next.dir === 'top')    { grid[y][x].top = false; grid[next.y][next.x].bottom = false; }
+      if (next.dir === 'right')  { grid[y][x].right = false; grid[next.y][next.x].left = false; }
+      if (next.dir === 'bottom') { grid[y][x].bottom = false; grid[next.y][next.x].top = false; }
+      if (next.dir === 'left')   { grid[y][x].left = false; grid[next.y][next.x].right = false; }
+      grid[next.y][next.x].visited = true;
+      visitedCount++;
+      cur = { x: next.x, y: next.y };
+    } else {
+      cur = stack.pop();
+    }
+  }
+}
+
+// --- 그리기 ---
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const s = cellSize;
+
+  // 셀 배경
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      ctx.fillStyle = '#16213e';
+      ctx.fillRect(x * s, y * s, s, s);
+    }
+  }
+
+  // 골 표시
+  ctx.fillStyle = '#0f0';
+  ctx.fillRect(goal.x * s + 4, goal.y * s + 4, s - 8, s - 8);
+  ctx.fillStyle = '#050';
+  ctx.font = `${s * 0.5}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('★', goal.x * s + s/2, goal.y * s + s/2);
+
+  // 플레이어
+  ctx.fillStyle = '#e94560';
+  ctx.beginPath();
+  ctx.arc(player.x * s + s/2, player.y * s + s/2, s/3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 벽 그리기
+  ctx.strokeStyle = '#e94560';
+  ctx.lineWidth = 2;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const cell = grid[y][x];
+      const px = x * s, py = y * s;
+      if (cell.top)    { ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + s, py); ctx.stroke(); }
+      if (cell.right)  { ctx.beginPath(); ctx.moveTo(px + s, py); ctx.lineTo(px + s, py + s); ctx.stroke(); }
+      if (cell.bottom) { ctx.beginPath(); ctx.moveTo(px, py + s); ctx.lineTo(px + s, py + s); ctx.stroke(); }
+      if (cell.left)   { ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px, py + s); ctx.stroke(); }
+    }
+  }
+}
+
+// --- 이동 ---
+function move(dx, dy) {
+  if (won) return;
+  const { x, y } = player;
+  const cell = grid[y][x];
+
+  if (dx === 0 && dy === -1 && cell.top) return;
+  if (dx === 1 && dy === 0 && cell.right) return;
+  if (dx === 0 && dy === 1 && cell.bottom) return;
+  if (dx === -1 && dy === 0 && cell.left) return;
+
+  const nx = x + dx, ny = y + dy;
+  if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) return;
+
+  player.x = nx;
+  player.y = ny;
+  moves++;
+  movesEl.textContent = moves;
+  draw();
+
+  if (nx === goal.x && ny === goal.y) {
+    won = true;
+    clearInterval(timerID);
+    clearTimeout(scrambleTimerID);
+    msgEl.textContent = `클리어! ${moves}번 이동, ${seconds}초 소요`;
+    level++;
+    setTimeout(() => {
+      if (confirm(`레벨 ${level - 1} 클리어!\n다음 레벨로 진행할까요?`)) {
+        newGame();
+      }
+    }, 300);
+  }
+}
+
+function mappedMove(inputDir) {
+  const actual = dirMap[inputDir];
+  const [dx, dy] = DIR_VECTORS[actual];
+  move(dx, dy);
+}
+
+// 키보드 입력
+document.addEventListener('keydown', e => {
+  switch(e.key) {
+    case 'ArrowUp':    case 'w': case 'W': mappedMove('up');    e.preventDefault(); break;
+    case 'ArrowDown':  case 's': case 'S': mappedMove('down');  e.preventDefault(); break;
+    case 'ArrowLeft':  case 'a': case 'A': mappedMove('left');  e.preventDefault(); break;
+    case 'ArrowRight': case 'd': case 'D': mappedMove('right'); e.preventDefault(); break;
+  }
+});
+
+init();
+</script>
+</body>
+</html>
